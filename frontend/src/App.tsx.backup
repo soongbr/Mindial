@@ -1,0 +1,568 @@
+import { useState, useCallback, useEffect, useMemo } from 'react';
+import MindMap from './components/MindMap';
+import NodeDetailPanel from './components/NodeDetailPanel';
+import type { KnowledgeTree, KnowledgeNode } from './types';
+import './App.css';
+
+// Cloudflare Tunnel 后端 API 地址（前端）
+const API_BASE = 'https://sort-outline-vendor-sells.trycloudflare.com/api';
+// 前端 Tunnel: https://ideal-over-stem-leisure.trycloudflare.com
+
+// 生成唯一 ID
+const generateId = () => Math.random().toString(36).substring(2, 15);
+
+// 创建空知识树
+const createEmptyTree = (): KnowledgeTree => ({
+  rootId: null,
+  nodes: {},
+  currentNodeId: null,
+  collapsedNodeIds: [],
+});
+
+// 搜索结果类型
+interface SearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+function App() {
+  const [tree, setTree] = useState<KnowledgeTree>(createEmptyTree);
+  const [inputMessage, setInputMessage] = useState('');
+  const [detailLevel, setDetailLevel] = useState<'short' | 'long'>('short');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [mcpQuery, setMcpQuery] = useState('');
+  const [mcpResults, setMcpResults] = useState<SearchResult[]>([]);
+
+  // 流式输出相关
+  const [streamingAnswer, setStreamingAnswer] = useState('');
+  const [isStreaming, setIsStreaming] = useState(false);
+
+  // 搜索结果展示（每轮对话的检索结果）
+  const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
+  const [showSearchResults, setShowSearchResults] = useState(false);
+
+  // 加载历史知识树
+  const loadHistory = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/history`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.rootId) {
+          setTree(prev => {
+            if (prev.rootId) {
+              return prev;
+            }
+            return {
+              ...data,
+              collapsedNodeIds: data.collapsedNodeIds || [],
+            };
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load history:', err);
+    }
+  }, []);
+
+  // 保存知识树
+  const saveTree = useCallback(async (treeData: KnowledgeTree) => {
+    try {
+      await fetch(`${API_BASE}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(treeData),
+      });
+    } catch (err) {
+      console.error('Failed to save tree:', err);
+    }
+  }, []);
+
+  // 流式创建根节点
+  const handleInitTopic = async () => {
+    if (!inputMessage.trim() || isLoading) return;
+
+    setIsLoading(true);
+    setError(null);
+    setStreamingAnswer('');
+    setIsStreaming(true);
+    setSearchResults(null);
+    setShowSearchResults(false);
+
+    const rootId = generateId();
+    let fullAnswer = '';
+    let concepts: string[] = [];
+    let searchResultsData: SearchResult[] | null = null;
+
+    // 先创建空节点
+    const rootNode: KnowledgeNode = {
+      id: rootId,
+      parentId: null,
+      question: inputMessage,
+      answer: '',
+      concepts: [],
+      children: [],
+      createdAt: Date.now(),
+      isStreamed: true,
+    };
+
+    const newTree: KnowledgeTree = {
+      rootId,
+      nodes: { [rootId]: rootNode },
+      currentNodeId: rootId,
+      collapsedNodeIds: [],
+    };
+
+    setTree(newTree);
+    setInputMessage('');
+
+    try {
+      const response = await fetch(`${API_BASE}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: inputMessage, detailLevel, useMCP: true }),
+      });
+
+      if (!response.ok) throw new Error('API 请求失败');
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) throw new Error('无法读取响应流');
+
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) continue;
+
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.substring(6).trim();
+            if (!jsonStr) continue;
+
+            try {
+              const data = JSON.parse(jsonStr);
+
+              if (data.fullText !== undefined) {
+                fullAnswer = data.fullText;
+                setStreamingAnswer(fullAnswer);
+
+                setTree(prev => ({
+                  ...prev,
+                  nodes: {
+                    ...prev.nodes,
+                    [rootId]: {
+                      ...prev.nodes[rootId],
+                      answer: fullAnswer,
+                    },
+                  },
+                }));
+              }
+
+              if (data.concepts) {
+                concepts = data.concepts;
+              }
+
+              // 处理搜索结果
+              if (data.searchResults?.results) {
+                searchResultsData = data.searchResults.results;
+              }
+            } catch (e) {
+              // 忽略解析错误
+            }
+          }
+        }
+      }
+
+      // 流式结束后更新完整数据
+      const conceptsMatch = fullAnswer.match(/关键概念 [：:]\s*([^\n]+)/i);
+      if (conceptsMatch && concepts.length === 0) {
+        const conceptsStr = conceptsMatch[1];
+        concepts = conceptsStr.split(/[,，]/).map(s => s.replace(/[\[\]]/g, '').trim()).filter(Boolean);
+      }
+
+      const finalAnswer = fullAnswer.split(/关键概念 [：:]/i)[0].trim();
+
+      // 保存搜索结果
+      if (searchResultsData && searchResultsData.length > 0) {
+        setSearchResults(searchResultsData);
+      }
+
+      setTree(prev => {
+        const updatedTree: KnowledgeTree = {
+          ...prev,
+          nodes: {
+            ...prev.nodes,
+            [rootId]: {
+              ...rootNode,
+              answer: finalAnswer,
+              concepts,
+              isStreamed: false,
+            },
+          },
+        };
+        saveTree(updatedTree);
+        return updatedTree;
+      });
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '发生错误');
+      setTree(createEmptyTree());
+    } finally {
+      setIsLoading(false);
+      setIsStreaming(false);
+    }
+  };
+
+  // 流式追问子节点
+  const handleChildMessage = async (parentId: string, message: string) => {
+    setIsLoading(true);
+    setError(null);
+    setStreamingAnswer('');
+    setIsStreaming(true);
+    setSearchResults(null);
+    setShowSearchResults(false);
+
+    const childId = generateId();
+    let fullAnswer = '';
+    let concepts: string[] = [];
+    let searchResultsData: SearchResult[] | null = null;
+
+    // 先创建空子节点
+    const childNode: KnowledgeNode = {
+      id: childId,
+      parentId,
+      question: message,
+      answer: '',
+      concepts: [],
+      children: [],
+      createdAt: Date.now(),
+      isStreamed: true,
+    };
+
+    setTree(prev => {
+      const parent = prev.nodes[parentId];
+      if (!parent) return prev;
+
+      const newNodes = {
+        ...prev.nodes,
+        [childId]: childNode,
+        [parentId]: {
+          ...parent,
+          children: [...parent.children, childId],
+        },
+      };
+
+      const newTree = {
+        ...prev,
+        nodes: newNodes,
+        currentNodeId: childId,
+        collapsedNodeIds: prev.collapsedNodeIds.filter(id => id !== parentId),
+      };
+
+      return newTree;
+    });
+
+    try {
+      const parentNode = tree.nodes[parentId];
+      const contextPrefix = parentNode
+        ? `[上下文] 关于"${parentNode.question}"的问题：\n`
+        : '';
+      const fullMessage = contextPrefix + message;
+
+      const response = await fetch(`${API_BASE}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: fullMessage, detailLevel, useMCP: true }),
+      });
+
+      if (!response.ok) throw new Error('API 请求失败');
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) throw new Error('无法读取响应流');
+
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) continue;
+
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.substring(6).trim();
+            if (!jsonStr) continue;
+
+            try {
+              const data = JSON.parse(jsonStr);
+
+              if (data.fullText !== undefined) {
+                fullAnswer = data.fullText;
+                setStreamingAnswer(fullAnswer);
+
+                setTree(prev => ({
+                  ...prev,
+                  nodes: {
+                    ...prev.nodes,
+                    [childId]: {
+                      ...prev.nodes[childId],
+                      answer: fullAnswer,
+                    },
+                  },
+                }));
+              }
+
+              if (data.concepts) {
+                concepts = data.concepts;
+              }
+
+              // 处理搜索结果
+              if (data.searchResults?.results) {
+                searchResultsData = data.searchResults.results;
+              }
+            } catch (e) {
+              // 忽略解析错误
+            }
+          }
+        }
+      }
+
+      // 流式结束后更新完整数据
+      const conceptsMatch = fullAnswer.match(/关键概念 [：:]\s*([^\n]+)/i);
+      if (conceptsMatch && concepts.length === 0) {
+        const conceptsStr = conceptsMatch[1];
+        concepts = conceptsStr.split(/[,，]/).map(s => s.replace(/[\[\]]/g, '').trim()).filter(Boolean);
+      }
+
+      const finalAnswer = fullAnswer.split(/关键概念 [：:]/i)[0].trim();
+
+      // 保存搜索结果
+      if (searchResultsData && searchResultsData.length > 0) {
+        setSearchResults(searchResultsData);
+      }
+
+      setTree(prev => {
+        const parent = prev.nodes[parentId];
+        if (!parent) return prev;
+
+        const newNodes = {
+          ...prev.nodes,
+          [childId]: {
+            ...childNode,
+            answer: finalAnswer,
+            concepts,
+            isStreamed: false,
+          },
+          [parentId]: {
+            ...parent,
+            children: [...parent.children.filter(c => c !== childId), childId],
+          },
+        };
+
+        const newTree = {
+          ...prev,
+          nodes: newNodes,
+        };
+
+        saveTree(newTree);
+        return newTree;
+      });
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '发生错误');
+    } finally {
+      setIsLoading(false);
+      setIsStreaming(false);
+    }
+  };
+
+  // 点击节点选择
+  const handleNodeClick = useCallback(
+    (nodeId: string) => {
+      setTree(prev => {
+        const newTree = { ...prev, currentNodeId: nodeId };
+        saveTree(newTree);
+        return newTree;
+      });
+      setMcpResults([]);
+      setStreamingAnswer('');
+      setSearchResults(null);
+      setShowSearchResults(false);
+    },
+    [saveTree]
+  );
+
+  // MCP 联网搜索（独立搜索功能）
+  const handleMCPSearch = async () => {
+    if (!mcpQuery.trim() || isLoading) return;
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/mcp-search?q=${encodeURIComponent(mcpQuery)}`);
+      if (!response.ok) throw new Error('MCP 搜索失败');
+      const data = await response.json();
+      setMcpResults(data.results || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'MCP 搜索失败');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 获取当前选中节点
+  const currentNode = tree.currentNodeId ? tree.nodes[tree.currentNodeId] : null;
+
+  // 构建追溯路径
+  const currentPath = useMemo(() => {
+    const path: KnowledgeNode[] = [];
+    let current = tree.currentNodeId ? tree.nodes[tree.currentNodeId] : null;
+    while (current) {
+      path.unshift(current);
+      current = current.parentId ? tree.nodes[current.parentId] : null;
+    }
+    return path;
+  }, [tree.nodes, tree.currentNodeId]);
+
+  // 组件加载时读取历史
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1>🧪 培养基</h1>
+        <p>AI 驱动的知识探索工具</p>
+      </header>
+
+      <main className="app-main">
+        {/* 左侧：思维导图区域 */}
+        <aside className="mindmap-sidebar">
+          <h2>知识导图</h2>
+          {tree.rootId ? (
+            <MindMap
+              tree={tree}
+              onNodeClick={handleNodeClick}
+              collapsedNodeIds={tree.collapsedNodeIds}
+            />
+          ) : (
+            <div className="empty-tree">输入主题开始探索</div>
+          )}
+
+          {/* MCP 联网搜索（独立功能） */}
+          <div className="mcp-search">
+            <h3>联网搜索</h3>
+            <div className="mcp-input-row">
+              <input
+                type="text"
+                className="mcp-input"
+                placeholder="输入搜索关键词..."
+                value={mcpQuery}
+                onChange={e => setMcpQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleMCPSearch();
+                }}
+              />
+              <button className="mcp-btn" onClick={handleMCPSearch} disabled={isLoading}>
+                搜索
+              </button>
+            </div>
+            {mcpResults.length > 0 && (
+              <div className="mcp-results">
+                {mcpResults.map((r, i) => (
+                  <div key={i} className="mcp-result-item">
+                    <div className="mcp-result-title">{r.title}</div>
+                    <div className="mcp-result-snippet">{r.snippet}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </aside>
+
+        {/* 右侧：节点详情面板 */}
+        <section className="detail-panel">
+          <NodeDetailPanel
+            node={currentNode}
+            currentPath={currentPath}
+            onNodeClick={handleNodeClick}
+            onChildMessage={(message) =>
+              currentNode && handleChildMessage(currentNode.id, message)
+            }
+            isLoading={isLoading}
+            streamingAnswer={streamingAnswer}
+            isStreaming={isStreaming}
+            searchResults={searchResults}
+            showSearchResults={showSearchResults}
+            onToggleSearchResults={() => setShowSearchResults(!showSearchResults)}
+          />
+
+          {/* 输入区域 - 当没有根节点时显示 */}
+          {!tree.rootId && (
+            <div className="input-area-overlay">
+              <textarea
+                className="message-input"
+                placeholder="输入你想探索的主题..."
+                value={inputMessage}
+                onChange={e => setInputMessage(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleInitTopic();
+                  }
+                }}
+                disabled={isLoading}
+              />
+              <div className="input-options">
+                <label>
+                  <input
+                    type="radio"
+                    checked={detailLevel === 'short'}
+                    onChange={() => setDetailLevel('short')}
+                  />
+                  简短回答
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    checked={detailLevel === 'long'}
+                    onChange={() => setDetailLevel('long')}
+                  />
+                  详细解释
+                </label>
+              </div>
+              <button
+                className="submit-btn"
+                onClick={handleInitTopic}
+                disabled={isLoading || !inputMessage.trim()}
+              >
+                {isLoading ? '思考中...' : '开始探索'}
+              </button>
+            </div>
+          )}
+
+          {error && <div className="error-message">{error}</div>}
+        </section>
+      </main>
+    </div>
+  );
+}
+
+export default App;
