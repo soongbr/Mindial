@@ -9,6 +9,7 @@ const fs = require('fs');
 const { QdrantClient } = require('@qdrant/js-client-rest');
 const { parseDocument, splitIntoChunks } = require('./documentParser');
 const { embedText, cosineSimilarity, generateFallbackEmbedding } = require('./embeddingService');
+const { fixFileNameEncoding } = require('../utils/filename');
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://127.0.0.1:6333';
 const COLLECTION_NAME = 'peiyangji_knowledge';
@@ -100,41 +101,8 @@ async function uploadDocument(file, userId) {
 
   const fileId = generateId();
   const filePath = file.path;
-  // 修复文件名编码问题（multer 可能导致乱码）
-  const rawFileName = file.originalname;
-  // 修复文件名编码问题（multer 可能导致乱码）
-  // 检测常见编码问题模式并修复
-  let fileName = rawFileName;
-  
-  // 检测是否为 mojibake（Latin-1 被误当 UTF-8）
-  // 典型模式：包含 é、、å 等字符
-  const mojibakeIndicators = ['é', 'è', 'ê', 'ë', 'à', 'â', 'ù', 'û', 'ü', 'ï', 'î', 'ô', 'ÿ'];
-  const hasMojibake = mojibakeIndicators.some(char => rawFileName.includes(char));
-  
-  if (hasMojibake) {
-    // Latin-1 误当 UTF-8 的情况
-    fileName = Buffer.from(rawFileName, 'latin1').toString('utf8');
-    console.log('Fixed mojibake filename:', rawFileName, '->', fileName);
-  } else if (rawFileName.includes('%')) {
-    // URL 编码情况
-    try {
-      fileName = decodeURIComponent(rawFileName);
-    } catch (e) {
-      // 忽略解码错误
-    }
-  } else if (/^[\x00-\xFF]+$/.test(rawFileName) && rawFileName.length > 10) {
-    // 纯 ASCII 范围但长度较长，可能是 GB/GBK 被误当 UTF-8
-    try {
-      const decoded = Buffer.from(rawFileName, 'latin1').toString('utf8');
-      // 验证解码后是否为有效中文（包含非 ASCII）
-      if (/[\u4e00-\u9fa5]/.test(decoded)) {
-        fileName = decoded;
-        console.log('Fixed GB encoding filename:', rawFileName, '->', fileName);
-      }
-    } catch (e) {
-      // 忽略
-    }
-  }
+  // 使用公共工具修复文件名编码
+  const fileName = fixFileNameEncoding(file.originalname);
   const fileExt = path.extname(fileName).toLowerCase();
   const fileSize = file.size;
 

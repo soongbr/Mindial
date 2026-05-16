@@ -842,6 +842,18 @@ function AppContent() {
     loadConversations();
   }, [loadConversations]);
 
+  // 切换账号时自动刷新所有状态
+  useEffect(() => {
+    setTree(createEmptyTree());
+    setCurrentConversationId(null);
+    setConversations([]);
+    setInputMessage('');
+    setError(null);
+    setSelectedDocumentIds([]);
+    setSidebarRefreshKey(k => k + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
   return (
     <ErrorBoundary>
     <div className="app">
@@ -926,7 +938,7 @@ function AppContent() {
       <main className="app-main">
         {/* 左侧：知识库侧边栏 */}
         <KnowledgeBaseSidebar
-          key={sidebarRefreshKey}
+          key={`kb-sidebar-${user?.id || 'anon'}-${sidebarRefreshKey}`}
           apiBase={API_BASE}
           token={token!}
           onGenerateMindMap={handleGenerateMindMap}

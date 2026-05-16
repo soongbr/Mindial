@@ -1,8 +1,11 @@
 node_modules/
 .env
+.env.bak
+.env.local
 *.db-wal
 *.db-shm
-data/*.db
+data/
+backend/data/
 dist/
 build/
 .DS_Store

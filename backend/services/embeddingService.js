@@ -3,8 +3,6 @@
  * 使用 MiniMax API 进行文本向量化
  * 包含 fallback：当 API 不可用时使用 TF-IDF 哈希生成伪向量
  */
-require('dotenv').config();
-
 const https = require('https');
 const crypto = require('crypto');
 

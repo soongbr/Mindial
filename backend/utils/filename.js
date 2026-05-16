@@ -5,59 +5,66 @@
 
 /**
  * 修复文件名编码问题
+ * 策略：检测是否已有有效中文 → 尝试 URL 解码 → 尝试 Latin-1→UTF-8 → 保持原样
  * @param {string} filename - 原始文件名
  * @returns {string} - 修复后的文件名
  */
 function fixFileNameEncoding(filename) {
   if (!filename) return filename;
 
-  try {
-    // 1. 如果文件名包含 %XX 序列，尝试 URL 解码
-    if (filename.includes('%')) {
-      try {
-        const decoded = decodeURIComponent(filename);
-        // 验证解码后是否为有效 UTF-8（不包含替换字符）
-        if (decoded && !decoded.includes('\uFFFD')) {
-          return decoded;
-        }
-      } catch (e) {
-        // URL 解码失败，继续尝试其他方式
-      }
-    }
-
-    // 2. 检测 mojibake（Latin-1 被误当 UTF-8）
-    const mojibakeIndicators = ['é', 'è', 'ê', 'ë', 'à', 'â', 'ù', 'û', 'ü', 'ï', 'î', 'ô', 'ÿ'];
-    const hasMojibake = mojibakeIndicators.some(char => filename.includes(char));
-
-    if (hasMojibake) {
-      const fixed = Buffer.from(filename, 'latin1').toString('utf8');
-      if (fixed && !fixed.includes('\uFFFD')) {
-        return fixed;
-      }
-    }
-
-    // 3. 检测纯 ASCII 范围但包含 GB/GBK 编码（可能有中文）
-    if (/^[\x00-\xFF]+$/.test(filename) && filename.length > 10) {
-      try {
-        const decoded = Buffer.from(filename, 'latin1').toString('utf8');
-        if (/[\u4e00-\u9fa5]/.test(decoded)) {
-          return decoded;
-        }
-      } catch (e) {
-        // 忽略
-      }
-    }
-
-    // 4. 已经包含无效替换字符，尝试 Latin-1 → UTF-8
-    if (filename.includes('\uFFFD')) {
-      const fixed = Buffer.from(filename, 'latin1').toString('utf8');
-      return fixed;
-    }
-
-    return filename;
-  } catch (e) {
+  // 0. 如果已经包含有效 CJK 字符，直接返回
+  if (/[\u4e00-\u9fff\u3400-\u4dbf\u{20000}-\u{2a6df}]/u.test(filename)) {
     return filename;
   }
+
+  // 1. 尝试 URL 解码 (%XX 序列)
+  if (filename.includes('%')) {
+    try {
+      const decoded = decodeURIComponent(filename);
+      if (decoded && !decoded.includes('\uFFFD') && /[\u4e00-\u9fff]/.test(decoded)) {
+        return decoded;
+      }
+    } catch (e) {
+      // URL 解码失败，继续
+    }
+  }
+
+  // 2. 尝试 Latin-1 → UTF-8（修复最常见的双编码问题）
+  //    这是最核心的修复：文件名以 UTF-8 字节传输但被当作 Latin-1 解析
+  try {
+    const decoded = Buffer.from(filename, 'latin1').toString('utf8');
+    // 验证结果：含有有效中文且无替换字符
+    if (/[\u4e00-\u9fff]/.test(decoded) && !decoded.includes('\uFFFD')) {
+      return decoded;
+    }
+  } catch (e) {
+    // 忽略
+  }
+
+  // 3. 包含替换字符 → 肯定有编码问题，强制 Latin-1 → UTF-8
+  if (filename.includes('\uFFFD')) {
+    try {
+      const decoded = Buffer.from(filename, 'latin1').toString('utf8');
+      return decoded;
+    } catch (e) {
+      // 忽略
+    }
+  }
+
+  // 4. 包含明显 mojibake 特征字符（拉丁重音字符通常表示双编码）
+  const mojibakePattern = /[éèêëàâùûüïîôöÿÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞß]/;
+  if (mojibakePattern.test(filename)) {
+    try {
+      const decoded = Buffer.from(filename, 'latin1').toString('utf8');
+      if (!decoded.includes('\uFFFD')) {
+        return decoded;
+      }
+    } catch (e) {
+      // 忽略
+    }
+  }
+
+  return filename;
 }
 
 module.exports = { fixFileNameEncoding };

@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-require('dotenv').config();
 
 // MiniMax MCP Search Service
 const mcpSearchService = require('./mcpSearchService');

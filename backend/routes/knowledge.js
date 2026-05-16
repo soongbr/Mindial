@@ -63,11 +63,12 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     }
 
     const filePath = req.file.path;
-    // 修复文件名编码
-    const fileName = fixFileNameEncoding(req.file.originalname);
+    // 修复文件名编码（统一处理，确保 Qdrant 和本地路径都使用正确的文件名）
+    const fixedName = fixFileNameEncoding(req.file.originalname);
+    req.file.originalname = fixedName;  // 覆盖原始名称，后续 service 层都使用修复后的名字
     const fileSize = req.file.size;
 
-    console.log('Received file:', fileName, 'Size:', fileSize);
+    console.log('Received file:', fixedName, 'Size:', fileSize);
 
     // 1. 解析文档内容（用于 Qdrant 和本地存储）
     let parsedContent = '';
@@ -87,7 +88,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     } catch (kbErr) {
       console.warn('Qdrant storage failed (non-fatal):', kbErr.message);
       // 如果 Qdrant 失败，保存在本地（传递解析后的内容）
-      fileInfo = knowledgeBaseService.addLocalFile(fileName, fileSize, filePath, parsedContent, req.user?.id);
+      fileInfo = knowledgeBaseService.addLocalFile(fixedName, fileSize, filePath, parsedContent, req.user?.id);
     }
 
     // 3. 清理临时文件（uploadDocument 内部已删除，此处为安全兜底）

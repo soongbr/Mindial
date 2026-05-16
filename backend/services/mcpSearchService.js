@@ -4,8 +4,6 @@
  * 
  * 使用 @modelcontextprotocol/sdk 官方 SDK 实现
  */
-require('dotenv').config();
-
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
 const path = require('path');
