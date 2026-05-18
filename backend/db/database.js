@@ -8,29 +8,35 @@ if (!fs.existsSync(dataDir)) {
 }
 
 const DB_PATH = path.join(dataDir, 'users.db');
-const DB_RAW_PATH = path.join(__dirname, '..', 'data', 'users.db');
 
-// 注意：better-sqlite3 需要使用绝对路径或相对于 cwd 的路径
-const Database = require('better-sqlite3');
-
-let db;
+// sql.js 是异步的，我们用初始化好的 db 实例
+let db = null;
+let initSqlJs = null;
 
 function getDb() {
-  if (!db) {
-    db = new Database(DB_RAW_PATH);
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-  }
   return db;
 }
 
-/**
- * 初始化数据库表
- */
-function initDb() {
-  const db = getDb();
-
-  db.exec(`
+async function initDb() {
+  if (!initSqlJs) {
+    initSqlJs = require('sql.js');
+  }
+  
+  const SQL = await initSqlJs();
+  
+  // 尝试读取已存在的数据库文件
+  let dbBuffer = null;
+  if (fs.existsSync(DB_PATH)) {
+    try {
+      dbBuffer = fs.readFileSync(DB_PATH);
+    } catch (e) {
+      console.log('读取现有数据库失败，将创建新数据库');
+    }
+  }
+  
+  db = new SQL.Database(dbBuffer);
+  
+  db.run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT UNIQUE NOT NULL,
@@ -50,8 +56,22 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     CREATE INDEX IF NOT EXISTS idx_invite_codes_used ON invite_codes(used);
   `);
-
-  console.log('🗄️  数据库表初始化完成');
+  
+  // 保存到文件
+  saveDb();
+  
+  console.log('🗄️  数据库初始化完成');
 }
 
-module.exports = { getDb, initDb };
+function saveDb() {
+  if (db) {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_PATH, buffer);
+  }
+}
+
+// 关闭数据库时保存
+process.on('exit', () => saveDb());
+
+module.exports = { getDb, initDb, saveDb };
